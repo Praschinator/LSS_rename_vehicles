@@ -10,6 +10,7 @@ Dokumentation:
 API Links: 
 [Vehicle API](https://www.leitstellenspiel.de/api/vehicles)
 [Building API](https://www.leitstellenspiel.de/api/buildings)
+[LSSM Vehicle Type API](https://api.lss-manager.de/de_DE/vehicles)
 
 
 
@@ -17,9 +18,9 @@ API Links:
 # Aktueller Stand:
 Die Lightbox wird geöffnet, die API Daten werden geladen
 
-## To-Do: 
-[ ] Settings Knopf funktionierbar machen --> Aliase für Wachen und Vehicle IDs müssen da Einstellbar sein.
-[ ] Einstellungen per GM_SetValue im Localstorage abspeichern, damit Wachen Aliase nicht erneut eingegeben werden müssen
-[ ] Knopf zum weiterleiten zur Seite zum umbenennen
-[ ] Logik implementieren, wie das Umbenennen passieren soll... (entweder in Settings Seite oder in Umbenennungsseite)
-[ ] Herausfinden wie HTTP Requests gemacht werden können, um das Umbenennen an den Server zu schicken
+Dann können Aliase für die Gebäude, und auch für die verschiedenen Fahrzeugtypen vergeben werden
+
+Auch kann eine "Logik" für den Aufbau des neuen Fahrzeugnamens vergeben werden
+
+Zum Schluss müssen zuerst die neuen Namen generiert werden. Im Anschluss kann per Knopfdruck das Umbenennen abgeschickt werden. Dann werden die neuen Namen an für das jeweillige Fahrzeug abgeschickt. 
+
