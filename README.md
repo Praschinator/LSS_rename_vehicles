@@ -4,13 +4,13 @@ LSS Tampermonkey Script to automatically rename vehicles
 
 
 Dokumentation: 
-[Tampermnkey Dokumentation](https://www.tampermonkey.net/documentation.php)
-[JavaScript Mozilla Dokumentation](https://developer.mozilla.org/de/docs/Web/JavaScript)
+- [Tampermonkey Dokumentation](https://www.tampermonkey.net/documentation.php)
+- [JavaScript Mozilla Dokumentation](https://developer.mozilla.org/de/docs/Web/JavaScript)
 
 API Links: 
-[Vehicle API](https://www.leitstellenspiel.de/api/vehicles)
-[Building API](https://www.leitstellenspiel.de/api/buildings)
-[LSSM Vehicle Type API](https://api.lss-manager.de/de_DE/vehicles)
+- [Vehicle API](https://www.leitstellenspiel.de/api/vehicles)
+- [Building API](https://www.leitstellenspiel.de/api/buildings)
+- [LSSM Vehicle Type API](https://api.lss-manager.de/de_DE/vehicles)
 
 
 
