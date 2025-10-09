@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rename Vehicles
 // @namespace    https://github.com/Praschinator
-// @version      0.0.1
+// @version      0.0.2
 // @description  Rename vehicles in the game
 // @author       Eli_Pra16 (forum.leitstellenspiel.de)
 // @match        https://www.leitstellenspiel.de/*
@@ -18,51 +18,55 @@
 // ==/UserScript==
 
 const TESTING = false;
-
 const VEHICLE_TYPE_CATALOG_URL = 'https://api.lss-manager.de/de_DE/vehicles';
 
-// NEW: storage key for rename pattern
 const RENAME_PATTERN_STORAGE_KEY = 'rv_rename_pattern';
 
-// NEW constants for session storage keys
-const SESSION_KEYS = {
+const LS_KEYS = {
     vehicleTypeAliases: 'rv_vehicleTypeAliases',
-    buildingAliases: 'rv_buildingAliases'
+    buildingAliases: 'rv_buildingAliases',
+    vehicleTypeCatalogMap: 'rv_vehicleTypeCatalogMap',
+    vehicles: 'vehicles_data',
+    buildings: 'building_data'
 };
 
-// Add new sessionStorage key for vehicle type catalog map
-const SESSION_VT_CATALOG_KEY = 'rv_vehicleTypeCatalogMap';
+/** KONFIG: Erlaubte Building Types (nur numerisch) */
+const ALLOWED_BUILDING_TYPES = new Set([0, 2, 5, 6, 9, 11, 12, 13, 15, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 28]);
 
-// Utility: load/save alias maps
-function loadAliasMap(key) {
-    try { return JSON.parse(sessionStorage.getItem(key)) || {}; } catch { return {}; }
-}
-function saveAliasMap(key, obj) {
-    sessionStorage.setItem(key, JSON.stringify(obj));
+/** Force: clears cached buildings and reloads them via API; no args. */
+async function forceReloadBuildings() {
+    localStorage.removeItem(LS_KEYS.buildings);
+    await api_call_buildings();
+    console.log('[RV] Buildings reloaded fresh from API');
 }
 
-// Helper: cache vehicle type catalog map (id -> caption)
+/** Storage: get JSON from localStorage with fallback. Args: key String, fallback any. */
+function lsGetJson(key, fallback = null) {
+    try { const raw = localStorage.getItem(key); return raw ? JSON.parse(raw) : fallback; } catch { return fallback; }
+}
+/** Storage: set JSON to localStorage. Args: key String, value any. */
+function lsSetJson(key, value) {
+    try { localStorage.setItem(key, JSON.stringify(value)); } catch {}
+}
+
+/** Aliases: load alias map by LS key. Args: key String. */
+function loadAliasMap(key) { return lsGetJson(key, {}) || {}; }
+/** Aliases: save alias map by LS key. Args: key String, obj Object. */
+function saveAliasMap(key, obj) { lsSetJson(key, obj); }
+
+/** Catalog: cache vehicle type id->caption map. Args: list Array. */
 function cacheVehicleTypeCatalogMap(list) {
     if (!Array.isArray(list)) return;
     const map = {};
-    list.forEach(v => {
-        if (v && Number.isFinite(v.id)) map[v.id] = v.caption;
-    });
-    sessionStorage.setItem(SESSION_VT_CATALOG_KEY, JSON.stringify(map));
+    list.forEach(v => { if (v && Number.isFinite(v.id)) map[v.id] = v.caption; });
+    lsSetJson(LS_KEYS.vehicleTypeCatalogMap, map);
     return map;
 }
-
+/** Catalog: load cached vehicle type map from LS; no args. */
 function loadVehicleTypeCatalogMap() {
-    try {
-        const raw = sessionStorage.getItem(SESSION_VT_CATALOG_KEY);
-        if (!raw) return null;
-        return JSON.parse(raw) || null;
-    } catch {
-        return null;
-    }
+    return lsGetJson(LS_KEYS.vehicleTypeCatalogMap, null);
 }
-
-// ADD: missing cached loader
+/** Catalog: return cached vehicle type map or build from playerVehicles. Args: playerVehicles Array. */
 async function getVehicleTypeCatalogCached(playerVehicles = []) {
     let map = loadVehicleTypeCatalogMap();
     if (map && Object.keys(map).length) return map;
@@ -70,24 +74,19 @@ async function getVehicleTypeCatalogCached(playerVehicles = []) {
         const list = await uniqueVehicleTypes(playerVehicles);
         map = cacheVehicleTypeCatalogMap(list) || {};
         return map;
-    } catch (e) {
-        console.warn('getVehicleTypeCatalogCached fallback:', e);
+    } catch {
         return {};
     }
 }
 
-// Debounce helper
+/** Utils: create a debounced function. Args: fn Function, wait Number(ms). */
 function debounce(fn, wait=300) {
-    let t;
-    return (...args) => {
-        clearTimeout(t);
-        t = setTimeout(()=>fn(...args), wait);
-    };
+    let t; return (...a)=>{ clearTimeout(t); t=setTimeout(()=>fn(...a), wait); };
 }
 
-// Definition Styles, kopiert aus Caddys Erweiterungsmanager :)
+// Styles // Abgekuckt von Caddy 
 const styles = `
-#rename_vehicles_extension-lightbox { /* FIX id naming to match creation */
+#rename_vehicles_extension-lightbox {
     position: fixed;
     top: 0;
     left: 0;
@@ -161,7 +160,6 @@ const styles = `
 #rename_vehicles_execute-button { background:#ffc107; color:#212529; }
 #rename_vehicles_execute-button:hover { background:#e0a800; }
 
-/* --- SETTINGS (Aliase) MODAL --- */
 #rename_vehicles_settings-overlay {
     position:fixed;
     inset:0;
@@ -226,7 +224,6 @@ const styles = `
 }
 .alias-saved-indicator.show { opacity:1; }
 
-/* --- RENAME PATTERN (Umbenennungslogik) MODAL (RESTORED) --- */
 #rename_vehicles_rename-overlay {
     position:fixed;
     inset:0;
@@ -295,7 +292,6 @@ const styles = `
 }
 #rv_pattern_saved.show { opacity:1; }
 
-/* --- Execute (Umbenennen) Modal --- */
 #rename_vehicles_execute-overlay {
     position:fixed;
     inset:0;
@@ -346,6 +342,23 @@ const styles = `
 #rv_pattern_info {
     font-size:12px; color:#555; display:flex; align-items:center; gap:.4rem; flex-wrap:wrap;
 }
+
+#rv_exec_progress {
+    font-size:12px;
+    color:#333;
+    margin-bottom:.35rem;
+}
+
+#rv_exec_log {
+    max-height:140px;
+    overflow:auto;
+    border:1px solid #ddd;
+    background:#fff;
+    padding:.35rem .5rem;
+    font-family:monospace;
+    font-size:11px;
+}
+
 #rename_vehicles_execute-table-wrapper {
     flex:1; overflow:auto; border:1px solid #ddd; background:#fafafa;
 }
@@ -358,87 +371,57 @@ const styles = `
     padding:.35rem .5rem; border:1px solid #ccc; text-align:left; vertical-align:middle;
 }
 #rename_vehicles_execute-table tbody tr:nth-child(even) { background:#f1f1f1; }
+
 .rv_new_name {
     font-family:monospace; font-size:11px; color:#004085; word-break:break-all;
 }
 .rv_changed td { background:#fff9e6; }
 .rv_badpattern { color:#dc3545; font-weight:600; }
+
+.rv_status_cell { font-weight:700; }
+.rv_status_pending { color:#6c757d; }
+.rv_status_running { color:#17a2b8; }
+.rv_status_retry { color:#ffc107; }
+.rv_status_done { color:#28a745; }
+.rv_status_failed { color:#dc3545; }
 `;
 
+/** UI: adds the "Fahrzeuge umbenennen" button to the profile dropdown; no args. */
 function add_button_to_personal_dropdown() {
     const profileMenu = document.querySelector('#menu_profile + .dropdown-menu');
-
-    // Inject static HTML ////////// --> Maybe edit 'span' for icon? Currently commented out
+    if (!profileMenu || document.getElementById('rename-vehicles-menu-button')) return;
     profileMenu.insertAdjacentHTML(
         'beforeend',
         `<li role="presentation">
-            <a id="rename-vehicles-menu-button" href="#">
-                <!-- <span class="glyphicon glyphicon-wrench"></span>&nbsp;&nbsp; -->
-                Fahrzeuge umbenennen
-            </a>
+            <a id="rename-vehicles-menu-button" href="#">Fahrzeuge umbenennen</a>
          </li>`
     );
-
     document.getElementById('rename-vehicles-menu-button').addEventListener('click', async e => {
         e.preventDefault();
-        if (TESTING == true) {
-            open_iframe();
-            return;
-        }
-        if (TESTING == false) {
-            // Call both APIs and wait until both are done, then open the iframe
-            const [data_buildings, data_vehicles] = await Promise.all([
-                api_call_buildings(),
-                api_call_vehicles()
-            ]);
-            // Pass the data to open_iframe if needed
-            open_iframe();
-        };
+        if (TESTING) return open_iframe();
+        await Promise.all([api_call_buildings(), api_call_vehicles()]);
+        open_iframe();
     });
 }
 
-// Function to join vehicles with their building information (like pandas join)
+/** Data: joins vehicles with their buildings into flat objects. Args: vehicles Array, buildings Array. */
 function joinVehiclesWithBuildings(vehicles, buildings) {
-    // Create a lookup map for buildings by ID for faster access
     const buildingMap = new Map();
-    buildings.forEach(building => {
-        buildingMap.set(building.id, building);
-    });
-    
-    // Join vehicles with their corresponding buildings - prefix properties to avoid conflicts
-    return vehicles.map(vehicle => {
-        const building = buildingMap.get(vehicle.building_id);
-        if (building) {
-            // Create new object with prefixed properties
-            const result = {};
-            
-            // Add all vehicle properties with "v_" prefix
-            Object.keys(vehicle).forEach(key => {
-                result[`v_${key}`] = vehicle[key];
-            });
-            
-            // Add all building properties with "b_" prefix
-            Object.keys(building).forEach(key => {
-                result[`b_${key}`] = building[key];
-            });
-            
-            return result;
-        } else {
-            // If no building found, still prefix vehicle properties for consistency
-            const result = {};
-            Object.keys(vehicle).forEach(key => {
-                result[`v_${key}`] = vehicle[key];
-            });
-            return result;
-        }
+    buildings.forEach(b => buildingMap.set(b.id, b));
+    return vehicles.map(v => {
+        const b = buildingMap.get(v.building_id);
+        const out = {};
+        Object.keys(v).forEach(k => out[`v_${k}`] = v[k]);
+        if (b) Object.keys(b).forEach(k => out[`b_${k}`] = b[k]);
+        return out;
     });
 }
 
+/** UI: opens main lightbox with navigation to settings/logic/execute; no args. */
 function open_iframe() {
-    console.log("Open Iframe NOW!");
+    if (document.getElementById('rename_vehicles_extension-lightbox')) return;
     const lightbox = document.createElement('div');
     lightbox.id = 'rename_vehicles_extension-lightbox';
-
     lightbox.innerHTML = `
         <div id="rename_vehicles_extension-lightbox-modal">
             <button id="rename_vehicles_extension-lightbox-close">✖</button>
@@ -451,51 +434,47 @@ function open_iframe() {
                     <button id="rename_vehicles_execute-button">Umbenennen</button>
                 </div>
             </div>
-        </div>
-    `;
+        </div>`;
     document.body.appendChild(lightbox);
 
-    const building_data = GM_getValue("building_data", null);
-    const vehicle_data  = GM_getValue("vehicles_data", null);
-
+    const building_data = lsGetJson(LS_KEYS.buildings, null);
+    const vehicle_data  = lsGetJson(LS_KEYS.vehicles, null);
     if (building_data && vehicle_data) {
-        const joinedData = joinVehiclesWithBuildings(vehicle_data, building_data);
-        console.log("Joined data:", joinedData);
+        console.log("Joined data:", joinVehiclesWithBuildings(vehicle_data, building_data));
     }
 
-    document.getElementById('rename_vehicles_extension-lightbox-close')
+    lightbox.querySelector('#rename_vehicles_extension-lightbox-close')
         .addEventListener('click', () => lightbox.remove());
 
-    document.getElementById('rename_vehicles_settings-button')
+    lightbox.querySelector('#rename_vehicles_settings-button')
         .addEventListener('click', async () => {
-            const b = GM_getValue("building_data", []) || [];
-            const v = GM_getValue("vehicles_data", []) || [];
-            await open_settings_modal(v, b);
+            await open_settings_modal(
+                lsGetJson(LS_KEYS.vehicles, []) || [],
+                lsGetJson(LS_KEYS.buildings, []) || []
+            );
         });
-
-    document.getElementById('rename_vehicles_rename-button')
+    lightbox.querySelector('#rename_vehicles_rename-button')
         .addEventListener('click', () => {
-            const b = GM_getValue("building_data", []) || [];
-            const v = GM_getValue("vehicles_data", []) || [];
-            open_rename_modal(v, b);
+            open_rename_modal(
+                lsGetJson(LS_KEYS.vehicles, []) || [],
+                lsGetJson(LS_KEYS.buildings, []) || []
+            );
         });
-
-    // NEW: execute rename (placeholder)
-    document.getElementById('rename_vehicles_execute-button')
+    lightbox.querySelector('#rename_vehicles_execute-button')
         .addEventListener('click', () => {
-            const b = GM_getValue("building_data", []) || [];
-            const v = GM_getValue("vehicles_data", []) || [];
-            open_execute_modal(v, b);
+            open_execute_modal(
+                lsGetJson(LS_KEYS.vehicles, []) || [],
+                lsGetJson(LS_KEYS.buildings, []) || []
+            );
         });
 }
 
-// REPLACE uniqueVehicleTypes with non-caching version
+/** API: fetches and normalizes the unique vehicle type list. Args: playerVehicles Array. */
 async function uniqueVehicleTypes(playerVehicles = []) {
     try {
-        const resp = await fetch(VEHICLE_TYPE_CATALOG_URL, { cache: 'no-store' });
+        const resp = await fetch(VEHICLE_TYPE_CATALOG_URL, { cache:'no-store' });
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
         const data = await resp.json();
-
         let list = [];
         if (Array.isArray(data)) {
             list = data.map(it => {
@@ -505,64 +484,66 @@ async function uniqueVehicleTypes(playerVehicles = []) {
                 return { id: idNum, caption };
             }).filter(Boolean);
         } else if (data && typeof data === 'object') {
-            list = Object.entries(data).map(([k, val]) => {
+            list = Object.entries(data).map(([k,val])=>{
                 const idNum = Number(k);
                 if (!Number.isFinite(idNum)) return null;
                 const caption = String(val.caption || val.name || val.localized_name || k).trim();
-                return { id: idNum, caption };
+                return { id:idNum, caption };
             }).filter(Boolean);
         }
-
-        // Deduplicate & sort numerically
         const seen = new Set();
-        list = list.filter(v => {
-            if (seen.has(v.id)) return false;
-            seen.add(v.id);
-            return true;
-        }).sort((a, b) => a.id - b.id);
-
+        list = list.filter(v => !seen.has(v.id) && seen.add(v.id)).sort((a,b)=>a.id-b.id);
         return list;
-    } catch (e) {
-        console.warn('Fahrzeugtypen API fehlgeschlagen – Fallback.', e);
-        // Fallback from playerVehicles
-        const seen = new Set();
-        const fb = [];
-        playerVehicles.forEach(v => {
+    } catch {
+        const seen = new Set(), fb=[];
+        playerVehicles.forEach(v=>{
             const raw = v.vehicle_type_id ?? v.vehicle_type ?? v.type ?? v.class ?? v.id;
             const idNum = Number(raw);
             if (!Number.isFinite(idNum) || seen.has(idNum)) return;
             seen.add(idNum);
-            const caption = String(
-                v.vehicle_type_caption || v.caption || v.name || raw
-            ).trim();
-            fb.push({ id: idNum, caption });
+            const caption = String(v.vehicle_type_caption || v.caption || v.name || raw).trim();
+            fb.push({ id:idNum, caption });
         });
-        fb.sort((a, b) => a.id - b.id);
+        fb.sort((a,b)=>a.id-b.id);
         return fb;
     }
 }
 
+/** Data: filters buildings by allowed numeric types and returns id/name pairs. Args: buildings Array. */
 function uniqueBuildings(buildings) {
-    const arr = buildings.map(b => {
-        let name = b.caption || b.name || b.building_caption || b.building_name || (b.id != null ? `Gebäude ${b.id}` : 'Unbekannt');
-        name = String(name).trim();
-        return { id: b.id, name };
+    if (!Array.isArray(buildings)) return [];
+
+    const kept = [];
+    const dropped = [];
+
+    for (const b of buildings) {
+        if (!b) continue;
+        const t = Number(b.building_type);
+        const isAllowed = Number.isFinite(t) && ALLOWED_BUILDING_TYPES.has(t);
+        if (isAllowed) kept.push(b); else dropped.push(b);
+    }
+
+    const arr = kept.map(b => {
+        const name = b.caption || b.name || b.building_caption || b.building_name || `Gebäude ${b.id}`;
+        return { id: b.id, name: String(name).trim() };
     });
-    arr.sort((a, b) => a.name.localeCompare(b.name, 'de'));
+
+    arr.sort((a,b)=>a.name.localeCompare(b.name,'de'));
     return arr;
 }
 
-// NEW: create settings modal
+/** UI: opens alias settings modal with vehicle/building alias inputs. Args: vehicles Array, buildings Array. */
 async function open_settings_modal(vehicles, buildings) {
-    // Prevent duplicate overlay
     if (document.getElementById('rename_vehicles_settings-overlay')) return;
 
     const vehicleTypes = await uniqueVehicleTypes(vehicles);
-    cacheVehicleTypeCatalogMap(vehicleTypes); // NEW: store map
+    cacheVehicleTypeCatalogMap(vehicleTypes);
+
+    // Will now only include allowed building types
     const buildingList = uniqueBuildings(buildings);
 
-    const vtAliases = loadAliasMap(SESSION_KEYS.vehicleTypeAliases);
-    const bdAliases = loadAliasMap(SESSION_KEYS.buildingAliases);
+    const vtAliases = loadAliasMap(LS_KEYS.vehicleTypeAliases);
+    const bdAliases = loadAliasMap(LS_KEYS.buildingAliases);
 
     const overlay = document.createElement('div');
     overlay.id = 'rename_vehicles_settings-overlay';
@@ -586,31 +567,26 @@ async function open_settings_modal(vehicles, buildings) {
                 <span class="alias-saved-indicator" id="rv_saved_indicator">Gespeichert</span>
             </div>
         </div>
-      </div>
-    `;
+      </div>`;
     document.body.appendChild(overlay);
 
     const vehicleContainer = overlay.querySelector('#rv_vehicle_types_container');
     vehicleTypes.forEach(vt => {
         const idStr = String(vt.id);
-        const div = document.createElement('div');
-        div.className = 'rename_vehicles_rv_pair';
-        div.innerHTML = `
-           <label title="${vt.caption}">${idStr} - ${vt.caption}</label>
-           <input type="text" data-type="vehicle" data-key="${encodeURIComponent(idStr)}" value="${vtAliases[idStr] ?? ''}" placeholder="Alias...">
-        `;
-        vehicleContainer.appendChild(div);
+        vehicleContainer.insertAdjacentHTML('beforeend', `
+          <div class="rename_vehicles_rv_pair">
+            <label title="${vt.caption}">${idStr} - ${vt.caption}</label>
+            <input type="text" data-type="vehicle" data-key="${encodeURIComponent(idStr)}" value="${vtAliases[idStr] ?? ''}" placeholder="Alias...">
+          </div>`);
     });
 
     const buildingContainer = overlay.querySelector('#rv_buildings_container');
     buildingList.forEach(b => {
-        const div = document.createElement('div');
-        div.className = 'rename_vehicles_rv_pair';
-        div.innerHTML = `
-           <label title="${b.name}">${b.id} - ${b.name}</label>
-           <input type="text" data-type="building" data-key="${b.id}" value="${bdAliases[b.id] ?? ''}" placeholder="Alias...">
-        `;
-        buildingContainer.appendChild(div);
+        buildingContainer.insertAdjacentHTML('beforeend', `
+          <div class="rename_vehicles_rv_pair">
+            <label title="${b.name}">${b.id} - ${b.name}</label>
+            <input type="text" data-type="building" data-key="${b.id}" value="${bdAliases[b.id] ?? ''}" placeholder="Alias...">
+          </div>`);
     });
 
     const savedIndicator = overlay.querySelector('#rv_saved_indicator');
@@ -618,38 +594,32 @@ async function open_settings_modal(vehicles, buildings) {
         savedIndicator.classList.add('show');
         setTimeout(()=>savedIndicator.classList.remove('show'), 1400);
     };
-
-    const debouncedSave = () => {
-        saveAliasMap(SESSION_KEYS.vehicleTypeAliases, vtAliases);
-        saveAliasMap(SESSION_KEYS.buildingAliases, bdAliases);
+    const debouncedSave = debounce(() => {
+        saveAliasMap(LS_KEYS.vehicleTypeAliases, vtAliases);
+        saveAliasMap(LS_KEYS.buildingAliases, bdAliases);
         showSaved();
-    };
+    }, 300);
 
     overlay.addEventListener('input', e => {
-        if (e.target.matches('input[data-type]')) {
-            const key = decodeURIComponent(e.target.dataset.key);
-            if (e.target.dataset.type === 'vehicle') {
-                if (e.target.value.trim()) vtAliases[key] = e.target.value.trim();
-                else delete vtAliases[key];
-            } else {
-                if (e.target.value.trim()) bdAliases[key] = e.target.value.trim();
-                else delete bdAliases[key];
-            }
-            debouncedSave();
+        if (!e.target.matches('input[data-type]')) return;
+        const key = decodeURIComponent(e.target.dataset.key);
+        if (e.target.dataset.type === 'vehicle') {
+            if (e.target.value.trim()) vtAliases[key] = e.target.value.trim(); else delete vtAliases[key];
+        } else {
+            if (e.target.value.trim()) bdAliases[key] = e.target.value.trim(); else delete bdAliases[key];
         }
+        debouncedSave();
     });
 
-    const closeFn = () => overlay.remove();
-    overlay.querySelector('#rename_vehicles_settings-close').addEventListener('click', closeFn);
+    overlay.querySelector('#rename_vehicles_settings-close')
+        .addEventListener('click', () => overlay.remove());
 }
 
-// NEW: rename pattern modal
-function open_rename_modal(vehicles, buildings) {
+/** UI: opens pattern editor modal for renaming logic; no args. */
+function open_rename_modal() {
     if (document.getElementById('rename_vehicles_rename-overlay')) return;
-
-    // Default pattern referencing supported vars
     const defaultPattern = '{stationAlias}-{tagging}-{number}';
-    const storedPattern = GM_getValue(RENAME_PATTERN_STORAGE_KEY, defaultPattern);
+    const storedPattern = localStorage.getItem(RENAME_PATTERN_STORAGE_KEY) || defaultPattern;
 
     const overlay = document.createElement('div');
     overlay.id = 'rename_vehicles_rename-overlay';
@@ -661,26 +631,23 @@ function open_rename_modal(vehicles, buildings) {
             <div id="rv_pattern_area_wrapper">
                 <label for="rv_pattern_input" style="font-weight:600;">Pattern:</label>
                 <textarea id="rv_pattern_input" spellcheck="false" placeholder="{stationAlias}-{tagging}-{number}">${storedPattern}</textarea>
-                <div id="rv_pattern_preview" title="Vorschau (zeigt Platzhalter farbig, keine echte Ersetzung)."></div>
+                <div id="rv_pattern_preview"></div>
             </div>
             <div id="rv_variable_list">
-                <strong>Verfügbare Platzhalter / Available placeholders:</strong><br><br>
-                <code>{id}</code> Fahrzeug-ID / Vehicle ID<br>
-                <code>{old}</code> Alter Name / Old name<br>
-                <code>{vehicleType}</code> Original Fahrzeugtyp Bezeichnung<br>
-                <code>{tagging}</code> Alias des Fahrzeugtyps (aus Settings)<br>
-                <code>{stationName}</code> Name des Gebäudes / Building name<br>
-                <code>{stationAlias}</code> Alias des Gebäudes (aus Settings)<br>
-                <code>{number}</code> Laufende Nummer pro Typ und Gebäude (arabisch) / sequential number<br>
-                <code>{numberRoman}</code> Laufende Nummer in römischen Zahlen / Roman numerals<br>
-                <hr style="margin:.6rem 0;">
-                Beispiel / Example:<br>
-                <code>{stationAlias}-{tagging}-{number}</code><br><br>
-                Hinweis: Diese Ansicht speichert nur das Muster. Die eigentliche Umbenennungs-Logik folgt separat.
+                <strong>Platzhalter:</strong><br><br>
+                <code>{id}</code> Fahrzeug-ID<br>
+                <code>{old}</code> Alter Name<br>
+                <code>{vehicleType}</code> Original Typbezeichnung<br>
+                <code>{tagging}</code> Fahrzeugtyp Alias<br>
+                <code>{stationName}</code> Gebäude-Name<br>
+                <code>{stationAlias}</code> Gebäude-Alias<br>
+                <code>{number}</code> Laufende Nummer<br>
+                <code>{numberRoman}</code> Nummer römisch<br>
+                Beispiel: <code>{stationAlias}-{tagging}-{number}</code>
             </div>
         </div>
         <div id="rename_vehicles_rename-footer">
-            <div style="display:flex;gap:.5rem;">
+            <div>
                 <button id="rv_pattern_reset" class="btn btn-xs btn-warning">Zurücksetzen</button>
             </div>
             <div style="display:flex;align-items:center;gap:.5rem;">
@@ -688,49 +655,40 @@ function open_rename_modal(vehicles, buildings) {
                 <button id="rv_pattern_close" class="btn btn-xs btn-success">Schließen</button>
             </div>
         </div>
-      </div>
-    `;
+      </div>`;
     document.body.appendChild(overlay);
 
     const ta = overlay.querySelector('#rv_pattern_input');
     const savedIndicator = overlay.querySelector('#rv_pattern_saved');
     const preview = overlay.querySelector('#rv_pattern_preview');
 
-    const showSaved = () => {
-        savedIndicator.classList.add('show');
-        setTimeout(()=>savedIndicator.classList.remove('show'), 1200);
-    };
-
+    const showSaved = () => { savedIndicator.classList.add('show'); setTimeout(()=>savedIndicator.classList.remove('show'), 1200); };
     const updatePreview = () => {
-        const val = ta.value;
-        preview.innerHTML = val.replace(/\{[^}]+\}/g, m => `<span style="color:#007bff;font-weight:600;">${m}</span>`);
+        preview.innerHTML = ta.value.replace(/\{[^}]+\}/g, m => `<span style="color:#007bff;font-weight:600;">${m}</span>`);
     };
     updatePreview();
 
     const debouncedSave = debounce(() => {
-        GM_setValue(RENAME_PATTERN_STORAGE_KEY, ta.value);
-        showSaved();
-        updatePreview();
+        localStorage.setItem(RENAME_PATTERN_STORAGE_KEY, ta.value);
+        showSaved(); updatePreview();
     }, 400);
 
     ta.addEventListener('input', debouncedSave);
-
     overlay.querySelector('#rv_pattern_reset').addEventListener('click', () => {
         ta.value = defaultPattern;
         debouncedSave();
     });
-
     const closeFn = () => overlay.remove();
     overlay.querySelector('#rv_pattern_close').addEventListener('click', closeFn);
     overlay.querySelector('#rename_vehicles_rename-close').addEventListener('click', closeFn);
 }
 
-// --- ADD: Execute / Umbenennen Modal + Helpers ---
+/** UI: opens execution modal, generates previews and commits renames. Args: vehicles Array, buildings Array. */
 function open_execute_modal(vehicles, buildings) {
     if (document.getElementById('rename_vehicles_execute-overlay')) return;
 
-    const vtAliases = loadAliasMap(SESSION_KEYS.vehicleTypeAliases);
-    const bdAliases = loadAliasMap(SESSION_KEYS.buildingAliases);
+    const vtAliases = loadAliasMap(LS_KEYS.vehicleTypeAliases);
+    const bdAliases = loadAliasMap(LS_KEYS.buildingAliases);
 
     const buildingMap = new Map();
     buildings.forEach(b => buildingMap.set(b.id, b));
@@ -744,7 +702,7 @@ function open_execute_modal(vehicles, buildings) {
         <div id="rename_vehicles_execute-toolbar">
             <button id="rv_btn_generate">Umbenennen starten</button>
             <button id="rv_btn_commit" disabled>Umbenennen speichern</button>
-            <div id="rv_pattern_info" title="Aktuell gespeichertes Pattern"></div>
+            <div id="rv_pattern_info"></div>
         </div>
         <div id="rv_exec_progress"><strong>Fortschritt:</strong> Noch keine Generierung.</div>
         <div id="rv_exec_log"></div>
@@ -752,20 +710,14 @@ function open_execute_modal(vehicles, buildings) {
             <table id="rename_vehicles_execute-table">
                 <thead>
                     <tr>
-                        <th style="width:55px;">ID</th>
-                        <th style="width:210px;">Aktueller Name</th>
-                        <th style="width:200px;">Gebäude</th>
-                        <th style="width:140px;">Fahrzeugtyp</th>
-                        <th style="width:60px;">Nr</th>
-                        <th style="width:220px;">Neuer Name (Vorschau)</th>
-                        <th style="width:80px;">Status</th>
+                        <th>ID</th><th>Aktueller Name</th><th>Gebäude</th><th>Fahrzeugtyp</th>
+                        <th>Nr</th><th>Neuer Name (Vorschau)</th><th>Status</th>
                     </tr>
                 </thead>
                 <tbody id="rv_exec_tbody"></tbody>
             </table>
         </div>
-      </div>
-    `;
+      </div>`;
     document.body.appendChild(overlay);
 
     overlay.querySelector('#rename_vehicles_execute-close')
@@ -776,13 +728,10 @@ function open_execute_modal(vehicles, buildings) {
 
     (async () => {
         const catalogMap = await getVehicleTypeCatalogCached(vehicles);
-
         vehicles.forEach(v => {
             const b = buildingMap.get(v.building_id) || {};
             const vehicleTypeId = v.vehicle_type ?? v.vehicle_type_id ?? '';
-            const vtCaption = catalogMap[vehicleTypeId] ||
-                              v.vehicle_type_caption ||
-                              `Typ ${vehicleTypeId}`;
+            const vtCaption = catalogMap[vehicleTypeId] || v.vehicle_type_caption || `Typ ${vehicleTypeId}`;
             const tr = document.createElement('tr');
             tr.dataset.vehicleId = v.id;
             tr.dataset.vehicleType = vehicleTypeId;
@@ -794,8 +743,7 @@ function open_execute_modal(vehicles, buildings) {
                 <td>${escapeHtml(vtCaption)}</td>
                 <td class="rv_seq"></td>
                 <td class="rv_new_name"></td>
-                <td class="rv_status_cell rv_status_pending">PENDING</td>
-            `;
+                <td class="rv_status_cell rv_status_pending">PENDING</td>`;
             tbody.appendChild(tr);
         });
 
@@ -806,7 +754,7 @@ function open_execute_modal(vehicles, buildings) {
             commitBtn: overlay.querySelector('#rv_btn_commit')
         };
 
-        const getPattern = () => GM_getValue(RENAME_PATTERN_STORAGE_KEY, '{stationAlias}-{tagging}-{number}');
+        const getPattern = () => localStorage.getItem(RENAME_PATTERN_STORAGE_KEY) || '{stationAlias}-{tagging}-{number}';
         patternInfo.textContent = 'Pattern: ' + getPattern();
 
         overlay.querySelector('#rv_btn_generate').addEventListener('click', () => {
@@ -830,20 +778,13 @@ function open_execute_modal(vehicles, buildings) {
                 const building = buildingMap.get(Number(bId)) || {};
 
                 const newName = applyRenamePattern(pattern, {
-                    vehicle,
-                    building,
-                    seq,
-                    seqStr,
-                    vtAliases,
-                    bdAliases,
-                    catalogMap
+                    vehicle, building, seq, seqStr,
+                    vtAliases, bdAliases, catalogMap
                 });
 
                 const oldName = vehicle.caption || '';
                 tr.querySelector('.rv_new_name').textContent = newName;
-                if (newName && newName !== oldName) tr.classList.add('rv_changed');
-                else tr.classList.remove('rv_changed');
-
+                if (newName && newName !== oldName) tr.classList.add('rv_changed'); else tr.classList.remove('rv_changed');
                 ops.push({ id: vid, old: oldName, proposed: newName });
             });
 
@@ -853,378 +794,139 @@ function open_execute_modal(vehicles, buildings) {
 
         overlay.querySelector('#rv_btn_commit').addEventListener('click', () => {
             const raw = overlay.dataset.operations;
-            if (!raw) {
-                ui.log && (ui.log.textContent += '\nErst generieren.');
-                return;
-            }
+            if (!raw) return;
             let ops;
-            try { ops = JSON.parse(raw); } catch(e){ return; }
-            overlay.querySelector('#rv_btn_commit').disabled = true;
-            overlay.querySelector('#rv_btn_commit').textContent = 'Läuft...';
+            try { ops = JSON.parse(raw); } catch { return; }
+            ui.commitBtn.disabled = true;
+            ui.commitBtn.textContent = 'Läuft...';
             startCaptionRenameQueue(ops, ui);
         });
     })();
-};
+}
 
-// --- NEW CONFIG FOR RENAME QUEUE (caption-only) ---
-const RENAME_RATE_MS = 100;      // 1 request / 100 ms
+const RENAME_RATE_MS = 100;
 const RENAME_MAX_RETRIES = 2;
 
-// --- NEW CSS (append to styles) ---
-/*
-Add after the existing CSS string creation if not already appended.
-You can also merge manually if you maintain styles elsewhere.
-*/
-(function appendRenameQueueCss(){
-    const extraCss = `
-#rename_vehicles_execute-table td.rv_status_cell { text-align:center; font-size:11px; font-weight:600; }
-.rv_status_pending { color:#6c757d; }
-.rv_status_running { color:#17a2b8; }
-.rv_status_done { color:#28a745; }
-.rv_status_failed { color:#dc3545; }
-.rv_status_retry { color:#fd7e14; }
-#rv_exec_progress {
-    font-size:12px;
-    padding:.2rem .5rem;
-    background:#eef5ff;
-    border:1px solid #cfe2ff;
-    border-radius:4px;
-    display:flex;
-    gap:.75rem;
-    flex-wrap:wrap;
-    align-items:center;
-}
-#rv_exec_progress strong { font-weight:600; }
-#rv_exec_log {
-    flex:1 1 100%;
-    max-height:70px;
-    overflow:auto;
-    background:#f8f9fa;
-    border:1px solid #ddd;
-    padding:.25rem .4rem;
-    font-size:11px;
-    line-height:1.25;
-    font-family:monospace;
-}
-    `;
-    const st = document.createElement('style');
-    st.textContent = extraCss;
-    document.head.appendChild(st);
-})();
-
-// --- CSRF TOKEN HELPERS (caption-only variant) ---
 let GLOBAL_CSRF_TOKEN = null;
-
+/** Auth: tries to read CSRF token from meta tags and cache it; no args. */
 async function getCsrfToken() {
     if (GLOBAL_CSRF_TOKEN) return GLOBAL_CSRF_TOKEN;
-
-    // Try meta tag (Rails pattern)
     const meta = document.querySelector('meta[name="csrf-token"], meta[name="csrf_token"]');
-    if (meta && meta.content) {
-        GLOBAL_CSRF_TOKEN = meta.content;
-        return GLOBAL_CSRF_TOKEN;
-    }
-
-    // Fallback: fetch one edit form (arbitrary first vehicle) if needed externally; left empty for now.
-    return null; // Will force per-vehicle edit fetch fallback
+    if (meta?.content) GLOBAL_CSRF_TOKEN = meta.content;
+    return GLOBAL_CSRF_TOKEN;
 }
-
+/** Auth: fetches authenticity_token from vehicle edit page. Args: vehicleId Number. */
 async function fetchAuthTokenFromEdit(vehicleId) {
     const resp = await fetch(`/vehicles/${vehicleId}/edit`, { credentials:'same-origin' });
-    if (!resp.ok) throw new Error(`Edit-Form HTTP ${resp.status}`);
+    if (!resp.ok) throw new Error(`Edit HTTP ${resp.status}`);
     const html = await resp.text();
-    const tokenMatch = html.match(/name="authenticity_token"\s+value="([^"]+)"/);
-    if (!tokenMatch) throw new Error('authenticity_token nicht gefunden');
-    return tokenMatch[1];
+    const m = html.match(/name="authenticity_token"\s+value="([^"]+)"/);
+    if (!m) throw new Error('authenticity_token nicht gefunden');
+    return m[1];
 }
-
-// --- SEND ONLY CAPTION (minimal form) ---
+/** API: sends only caption rename PATCH for a vehicle. Args: vehicleId Number, newCaption String. */
 async function sendRenameCaptionOnly(vehicleId, newCaption) {
     let token = await getCsrfToken();
-    if (!token) {
-        // fallback fetch for this vehicle
-        token = await fetchAuthTokenFromEdit(vehicleId);
-    }
+    if (!token) token = await fetchAuthTokenFromEdit(vehicleId);
     const fd = new FormData();
-    fd.append('utf8', '✓');
-    fd.append('_method', 'patch');
+    fd.append('utf8','✓');
+    fd.append('_method','patch');
     fd.append('authenticity_token', token);
     fd.append('vehicle[caption]', newCaption);
-    fd.append('commit', 'Speichern');
-
-    const resp = await fetch(`/vehicles/${vehicleId}`, {
-        method: 'POST',
-        body: fd,
-        credentials: 'same-origin'
-    });
+    fd.append('commit','Speichern');
+    const resp = await fetch(`/vehicles/${vehicleId}`, { method:'POST', body:fd, credentials:'same-origin' });
     if (!resp.ok) throw new Error(`Rename HTTP ${resp.status}`);
     return true;
 }
 
-// --- RENAME QUEUE (sequential, 100ms spacing, caption only) ---
+/** Queue: processes rename operations with retries and UI updates. Args: operations Array, uiCtx Object. */
 function startCaptionRenameQueue(operations, uiCtx) {
-    const queue = operations
-        .filter(o => o.proposed && o.proposed !== o.old)
+    const queue = operations.filter(o => o.proposed && o.proposed !== o.old)
         .map(o => ({ ...o, tries:0, status:'pending' }));
-
     if (!queue.length) {
-        logExec('Keine zu ändernden Fahrzeuge.');
+        logExec('Keine Änderungen.');
         return queue;
     }
-
     let index = 0;
-    updateProgress(queue);
 
-    function updateRowStatus(item) {
+    /** Log: appends a timestamped message to exec log. Args: msg String. */
+    function logExec(msg) {
+        if (!uiCtx.log) return;
+        const div = document.createElement('div');
+        div.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+        uiCtx.log.appendChild(div);
+        uiCtx.log.scrollTop = uiCtx.log.scrollHeight;
+    }
+    /** UI: updates status cell for a queue item. Args: item Object. */
+    function updateRow(item) {
         const row = uiCtx.tbody.querySelector(`tr[data-vehicle-id="${item.id}"]`);
         if (!row) return;
         const cell = row.querySelector('.rv_status_cell');
-        if (!cell) return;
         cell.textContent = item.status.toUpperCase();
         cell.className = `rv_status_cell rv_status_${item.status}`;
-        if (item.status === 'done') row.classList.add('rv_done_success');
     }
-
-    function logExec(msg) {
-        if (!uiCtx.log) return;
-        const line = document.createElement('div');
-        line.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
-        uiCtx.log.appendChild(line);
-        uiCtx.log.scrollTop = uiCtx.log.scrollHeight;
+    /** UI: updates progress summary counts; no args. */
+    function updateProgress() {
+        const t=queue.length;
+        const done=queue.filter(i=>i.status==='done').length;
+        const failed=queue.filter(i=>i.status==='failed').length;
+        const retry=queue.filter(i=>i.status==='retry').length;
+        const running=queue.filter(i=>i.status==='running').length;
+        if (uiCtx.progressBox) uiCtx.progressBox.innerHTML =
+            `<strong>Fortschritt:</strong> Gesamt:${t} | Fertig:${done} | Läuft:${running} | Retry:${retry} | Fehlgeschlagen:${failed} | Offen:${t-done-failed-running-retry}`;
     }
-
-    function updateProgress(list) {
-        const total = list.length;
-        const done = list.filter(i=>i.status==='done').length;
-        const failed = list.filter(i=>i.status==='failed').length;
-        const running = list.filter(i=>i.status==='running').length;
-        const retry = list.filter(i=>i.status==='retry').length;
-        if (uiCtx.progressBox) {
-            uiCtx.progressBox.innerHTML = `
-                <strong>Fortschritt:</strong>
-                Gesamt: ${total} |
-                Fertig: ${done} |
-                Läuft: ${running} |
-                Retry: ${retry} |
-                Fehlgeschlagen: ${failed} |
-                Offen: ${total - done - failed - running - retry}
-            `;
-        }
-    }
-
+    /** Step: consumes next queue item, performs rename, handles retry. No direct args. */
     async function step() {
         if (index >= queue.length) {
-            logExec('Fertig – Queue abgeschlossen.');
-            updateProgress(queue);
+            logExec('Abgeschlossen.');
+            updateProgress();
             uiCtx.commitBtn.disabled = false;
             uiCtx.commitBtn.textContent = 'Umbenennen speichern (erneut)';
             return;
         }
         const item = queue[index];
-        if (item.status === 'done' || item.status === 'failed') {
-            index++;
-            return setTimeout(step, RENAME_RATE_MS);
+        if (['done','failed'].includes(item.status)) {
+            index++; return setTimeout(step, RENAME_RATE_MS);
         }
-        item.status = 'running';
-        item.tries++;
-        updateRowStatus(item);
-        updateProgress(queue);
-
+        item.status='running'; item.tries++; updateRow(item); updateProgress();
         try {
             await sendRenameCaptionOnly(item.id, item.proposed);
-            item.status = 'done';
-            logExec(`OK: Fahrzeug ${item.id} -> "${item.proposed}"`);
-        } catch (e) {
+            item.status='done';
+            logExec(`OK ${item.id} -> "${item.proposed}"`);
+        } catch(e) {
             if (item.tries <= RENAME_MAX_RETRIES) {
-                item.status = 'retry';
-                logExec(`Retry (${item.tries}) Fahrzeug ${item.id}: ${e.message}`);
+                item.status='retry';
+                logExec(`Retry ${item.id} (${item.tries}): ${e.message}`);
             } else {
-                item.status = 'failed';
-                logExec(`FEHLER: Fahrzeug ${item.id}: ${e.message}`);
+                item.status='failed';
+                logExec(`FEHLER ${item.id}: ${e.message}`);
             }
         }
-        updateRowStatus(item);
-        updateProgress(queue);
-
-        if (item.status === 'retry') {
-            // Retry same index after delay
+        updateRow(item); updateProgress();
+        if (item.status==='retry') {
             return setTimeout(step, RENAME_RATE_MS);
         } else {
-            index++;
-            return setTimeout(step, RENAME_RATE_MS);
+            index++; return setTimeout(step, RENAME_RATE_MS);
         }
     }
-
-    logExec(`Starte Queue mit ${queue.length} Fahrzeug(en).`);
+    logExec(`Starte Queue (${queue.length}).`);
+    updateProgress();
     step();
     return queue;
 }
 
-// --- PATCH open_execute_modal: add Status column + integrate queue ---
-const _old_open_execute_modal = open_execute_modal;
-open_execute_modal = function(vehicles, buildings) {
-    if (document.getElementById('rename_vehicles_execute-overlay')) return;
-
-    const vtAliases = loadAliasMap(SESSION_KEYS.vehicleTypeAliases);
-    const bdAliases = loadAliasMap(SESSION_KEYS.buildingAliases);
-
-    const buildingMap = new Map();
-    buildings.forEach(b => buildingMap.set(b.id, b));
-
-    const overlay = document.createElement('div');
-    overlay.id = 'rename_vehicles_execute-overlay';
-    overlay.innerHTML = `
-      <div id="rename_vehicles_execute-modal">
-        <button id="rename_vehicles_execute-close">✖</button>
-        <h2 id="rename_vehicles_execute-title">Fahrzeuge umbenennen</h2>
-        <div id="rename_vehicles_execute-toolbar">
-            <button id="rv_btn_generate">Umbenennen starten</button>
-            <button id="rv_btn_commit" disabled>Umbenennen speichern</button>
-            <div id="rv_pattern_info" title="Aktuell gespeichertes Pattern"></div>
-        </div>
-        <div id="rv_exec_progress"><strong>Fortschritt:</strong> Noch keine Generierung.</div>
-        <div id="rv_exec_log"></div>
-        <div id="rename_vehicles_execute-table-wrapper">
-            <table id="rename_vehicles_execute-table">
-                <thead>
-                    <tr>
-                        <th style="width:55px;">ID</th>
-                        <th style="width:210px;">Aktueller Name</th>
-                        <th style="width:200px;">Gebäude</th>
-                        <th style="width:140px;">Fahrzeugtyp</th>
-                        <th style="width:60px;">Nr</th>
-                        <th style="width:220px;">Neuer Name (Vorschau)</th>
-                        <th style="width:80px;">Status</th>
-                    </tr>
-                </thead>
-                <tbody id="rv_exec_tbody"></tbody>
-            </table>
-        </div>
-      </div>
-    `;
-    document.body.appendChild(overlay);
-
-    overlay.querySelector('#rename_vehicles_execute-close')
-        .addEventListener('click', () => overlay.remove());
-
-    const tbody = overlay.querySelector('#rv_exec_tbody');
-    const patternInfo = overlay.querySelector('#rv_pattern_info');
-
-    (async () => {
-        const catalogMap = await getVehicleTypeCatalogCached(vehicles);
-
-        vehicles.forEach(v => {
-            const b = buildingMap.get(v.building_id) || {};
-            const vehicleTypeId = v.vehicle_type ?? v.vehicle_type_id ?? '';
-            const vtCaption = catalogMap[vehicleTypeId] ||
-                              v.vehicle_type_caption ||
-                              `Typ ${vehicleTypeId}`;
-            const tr = document.createElement('tr');
-            tr.dataset.vehicleId = v.id;
-            tr.dataset.vehicleType = vehicleTypeId;
-            tr.dataset.buildingId = v.building_id ?? '';
-            tr.innerHTML = `
-                <td>${v.id}</td>
-                <td class="rv_old_name">${escapeHtml(v.caption || '')}</td>
-                <td>${escapeHtml(b.caption || b.name || ('Gebäude '+(b.id??'?')))}</td>
-                <td>${escapeHtml(vtCaption)}</td>
-                <td class="rv_seq"></td>
-                <td class="rv_new_name"></td>
-                <td class="rv_status_cell rv_status_pending">PENDING</td>
-            `;
-            tbody.appendChild(tr);
-        });
-
-        const ui = {
-            tbody,
-            progressBox: overlay.querySelector('#rv_exec_progress'),
-            log: overlay.querySelector('#rv_exec_log'),
-            commitBtn: overlay.querySelector('#rv_btn_commit')
-        };
-
-        const getPattern = () => GM_getValue(RENAME_PATTERN_STORAGE_KEY, '{stationAlias}-{tagging}-{number}');
-        patternInfo.textContent = 'Pattern: ' + getPattern();
-
-        overlay.querySelector('#rv_btn_generate').addEventListener('click', () => {
-            const pattern = getPattern();
-            patternInfo.textContent = 'Pattern: ' + pattern;
-            const counters = {};
-            const ops = [];
-
-            tbody.querySelectorAll('tr').forEach(tr => {
-                const vid = Number(tr.dataset.vehicleId);
-                const vType = tr.dataset.vehicleType;
-                const bId = tr.dataset.buildingId;
-                const key = `${bId}|${vType}`;
-                counters[key] = (counters[key] || 0) + 1;
-
-                const seq = counters[key];
-                const seqStr = seq.toString().padStart(2,'0');
-                tr.querySelector('.rv_seq').textContent = seqStr;
-
-                const vehicle = vehicles.find(x => x.id === vid);
-                const building = buildingMap.get(Number(bId)) || {};
-
-                const newName = applyRenamePattern(pattern, {
-                    vehicle,
-                    building,
-                    seq,
-                    seqStr,
-                    vtAliases,
-                    bdAliases,
-                    catalogMap
-                });
-
-                const oldName = vehicle.caption || '';
-                tr.querySelector('.rv_new_name').textContent = newName;
-                if (newName && newName !== oldName) tr.classList.add('rv_changed');
-                else tr.classList.remove('rv_changed');
-
-                ops.push({ id: vid, old: oldName, proposed: newName });
-            });
-
-            overlay.dataset.operations = JSON.stringify(ops);
-            ui.commitBtn.disabled = false;
-        });
-
-        overlay.querySelector('#rv_btn_commit').addEventListener('click', () => {
-            const raw = overlay.dataset.operations;
-            if (!raw) {
-                ui.log && (ui.log.textContent += '\nErst generieren.');
-                return;
-            }
-            let ops;
-            try { ops = JSON.parse(raw); } catch(e){ return; }
-            overlay.querySelector('#rv_btn_commit').disabled = true;
-            overlay.querySelector('#rv_btn_commit').textContent = 'Läuft...';
-            startCaptionRenameQueue(ops, ui);
-        });
-    })();
-};
-
-// Updated: applyRenamePattern now uses catalogMap preferentially
+/** Naming: builds a new caption from pattern and context. Args: pattern String, ctx Object. */
 function applyRenamePattern(pattern, ctx) {
     if (!pattern) return '';
-    const {
-        vehicle, building, seq, seqStr,
-        vtAliases, bdAliases, catalogMap = {}
-    } = ctx;
-
+    const { vehicle, building, seq, seqStr, vtAliases, bdAliases, catalogMap = {} } = ctx;
     const vehicleTypeId = vehicle.vehicle_type ?? vehicle.vehicle_type_id ?? '';
     const catalogCaption = catalogMap[vehicleTypeId];
-    const baseTypeCaption =
-        catalogCaption ||
-        vehicle.vehicle_type_caption ||
-        `Typ ${vehicleTypeId}`;
-
+    const baseTypeCaption = catalogCaption || vehicle.vehicle_type_caption || `Typ ${vehicleTypeId}`;
     const tagging = vtAliases[String(vehicleTypeId)] || baseTypeCaption;
-
     const stationName = building.caption || building.name || (`Gebäude ${building.id ?? ''}`).trim();
     const stationAlias = bdAliases[String(building.id)] || stationName;
-
     const roman = toRoman(seq);
-
-    const replacements = {
+    const repl = {
         '{id}': vehicle.id,
         '{old}': vehicle.caption || '',
         '{vehicleType}': baseTypeCaption,
@@ -1236,67 +938,71 @@ function applyRenamePattern(pattern, ctx) {
         '{number}': seqStr,
         '{numberRoman}': roman
     };
-
     let out = pattern;
-    Object.entries(replacements).forEach(([k, v]) => {
-        if (out.includes(k)) out = out.split(k).join(v);
-    });
+    Object.entries(repl).forEach(([k,v]) => { if (out.includes(k)) out = out.split(k).join(v); });
     return out.trim();
 }
 
+/** Utils: converts a positive integer to Roman numerals. Args: num Number. */
 function toRoman(num) {
-    const map = [
-        [1000,'M'],[900,'CM'],[500,'D'],[400,'CD'],
-        [100,'C'],[90,'XC'],[50,'L'],[40,'XL'],
-        [10,'X'],[9,'IX'],[5,'V'],[4,'IV'],[1,'I']
-    ];
-    let n = Number(num);
-    if (!Number.isFinite(n) || n <= 0) return '';
-    let res = '';
-    for (const [v,s] of map) {
-        while (n >= v) { res += s; n -= v; }
-        if (!n) break;
-    }
-    return res;
+    const map=[[1000,'M'],[900,'CM'],[500,'D'],[400,'CD'],[100,'C'],[90,'XC'],[50,'L'],[40,'XL'],[10,'X'],[9,'IX'],[5,'V'],[4,'IV'],[1,'I']];
+    let n=Number(num); if(!Number.isFinite(n)||n<=0) return '';
+    let r=''; for(const [v,s] of map){ while(n>=v){r+=s;n-=v;} if(!n) break; } return r;
 }
 
-function escapeHtml(str) {
-    return String(str).replace(/[&<>"']/g, c => ({
-        '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
-    }[c]));
-}
+/** Utils: escapes HTML special chars to prevent injection. Args: str String. */
+function escapeHtml(str){ return String(str).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
+/** API: loads vehicles list and caches it in LS; no args. */
 async function api_call_vehicles() {
-    // https://www.leitstellenspiel.de/api/vehicles
-    const response = await fetch("https://www.leitstellenspiel.de/api/vehicles");
-    const data = await response.json();
-    // console.log(data);
-    GM_setValue("vehicles_data", data);
+    const resp = await fetch("https://www.leitstellenspiel.de/api/vehicles");
+    const data = await resp.json();
+    lsSetJson(LS_KEYS.vehicles, data);
     console.log("API Call Vehicles erfolgreich");
     return data;
 }
-
+/** API: loads buildings list and caches it in LS; no args. */
 async function api_call_buildings() {
-    // https://www.leitstellenspiel.de/api/buildings
-    const response = await fetch("https://www.leitstellenspiel.de/api/buildings");
-    const data = await response.json();
-    // console.log(data);
-    GM_setValue("building_data", data);
+    const resp = await fetch("https://www.leitstellenspiel.de/api/buildings");
+    const data = await resp.json();
+    lsSetJson(LS_KEYS.buildings, data);
     console.log("API Call Buildings erfolgreich");
     return data;
 }
 
-
+/** UI: injects style block once into the page; no args. */
 function inject_styles() {
+    if (document.getElementById('rv_style_block')) return;
     const styleSheet = document.createElement('style');
+    styleSheet.id = 'rv_style_block';
     styleSheet.textContent = styles;
     document.head.appendChild(styleSheet);
 }
 
-(function() { 
-    console.log(`Fahrzeug Umbenenner geladen. API Calls werden beim öffnen des Fensters ausgeführt. ${new Date().toISOString()}`);
+/** Init: boots the script, injects styles, adds menu button and observers; no args. */
+(function init() {
+    console.log('Rename Vehicles Script geladen', new Date().toISOString());
     inject_styles();
-    add_button_to_personal_dropdown();
+
+    function tryAdd() {
+        add_button_to_personal_dropdown();
+        if (!document.getElementById('rename-vehicles-menu-button')) {
+            setTimeout(tryAdd, 800);
+        }
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', tryAdd);
+    } else {
+        tryAdd();
+    }
+
+    const obs = new MutationObserver(() => {
+        if (!document.getElementById('rename-vehicles-menu-button')) {
+            add_button_to_personal_dropdown();
+        }
+    });
+    obs.observe(document.body, { childList: true, subtree: true });
 })();
 
 
