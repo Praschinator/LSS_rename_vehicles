@@ -13,7 +13,7 @@
 // @connect      api.lss-manager.de
 // @connect      leitstellenspiel.de
 
-// @require      file://C:\Users\Elias\Documents\GitHub\LSS_rename_vehicles\rename_vehicles.user.js
+
 
 // ==/UserScript==
 

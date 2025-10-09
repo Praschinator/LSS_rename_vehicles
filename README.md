@@ -29,8 +29,8 @@ Zum Schluss müssen zuerst die neuen Namen generiert werden. Im Anschluss kann p
 
 [ ] Skript geht nur im Light Mode --> Code von Caddy erhalten um das auszulesen und anzupassen
 
-[ ] im Alias für Gebäude die Aliase beschränken auf nur Wachen, die Gebäude haben. (kein Krankenhaus, Schulen)
+[x] im Alias für Gebäude die Aliase beschränken auf nur Wachen, die Gebäude haben. (kein Krankenhaus, Schulen)
 
-[x] Es sollen für verschiedene Wachen Typen unterschiedliche Logiken zum Umbenennen genutzt werden [Forum Post](https://forum.leitstellenspiel.de/index.php?thread/10810-scriptwusch-fahrzeugumbenennungsscript/&postID=566930#post566930)
+[ ] Es sollen für verschiedene Wachen Typen unterschiedliche Logiken zum Umbenennen genutzt werden [Forum Post](https://forum.leitstellenspiel.de/index.php?thread/10810-scriptwusch-fahrzeugumbenennungsscript/&postID=566930#post566930)
 
 [x] Genaue Unterscheidung zwischen "local storage" und "session storage" --> Beschwerde, dass Aliase nicht gespeichert wurden. 
