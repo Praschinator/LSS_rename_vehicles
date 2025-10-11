@@ -12,9 +12,6 @@
 // @supportURL   https://forum.leitstellenspiel.de/index.php?thread/10810-scriptwusch-fahrzeugumbenennungsscript/
 // @connect      api.lss-manager.de
 // @connect      leitstellenspiel.de
-
-// @require      file://C:\Users\Elias\Documents\GitHub\LSS_rename_vehicles\rename_vehicles.user.js
-
 // ==/UserScript==
 
 const TESTING = false;
