@@ -27,7 +27,7 @@ Zum Schluss müssen zuerst die neuen Namen generiert werden. Im Anschluss kann p
 
 # Bekannte Probleme:
 
-[ ] Skript geht nur im Light Mode --> Code von Caddy erhalten um das auszulesen und anzupassen
+[x] Skript geht nur im Light Mode --> Code von Caddy erhalten um das auszulesen und anzupassen
 
 [x] im Alias für Gebäude die Aliase beschränken auf nur Wachen, die Gebäude haben. (kein Krankenhaus, Schulen)
 

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Rename Vehicles
 // @namespace    https://github.com/Praschinator
-// @version      0.0.2
+// @version      0.0.3
 // @description  Rename vehicles in the game
 // @author       Eli_Pra16 (forum.leitstellenspiel.de)
 // @match        https://www.leitstellenspiel.de/*
@@ -13,7 +13,7 @@
 // @connect      api.lss-manager.de
 // @connect      leitstellenspiel.de
 
-
+// @require      file://C:\Users\Elias\Documents\GitHub\LSS_rename_vehicles\rename_vehicles.user.js
 
 // ==/UserScript==
 
@@ -384,7 +384,121 @@ const styles = `
 .rv_status_retry { color:#ffc107; }
 .rv_status_done { color:#28a745; }
 .rv_status_failed { color:#dc3545; }
+
+/* Dark mode row striping: use grey tones instead of black/white */
+body.dark #rename_vehicles_execute-table tbody tr:nth-child(even),
+body.bigMapDark #rename_vehicles_execute-table tbody tr:nth-child(even) {
+    background: transparent !important; /* neutralize default even striping in dark mode */
+}
+#rename_vehicles_execute-table tbody tr.rv_dark_row_even td,
+#rename_vehicles_execute-table tbody tr.rv_dark_row_even th {
+    background: #2d2f34 !important; /* grey */
+    color: #fff !important;
+}
+#rename_vehicles_execute-table tbody tr.rv_dark_row_odd td,
+#rename_vehicles_execute-table tbody tr.rv_dark_row_odd th {
+    background: #24262b !important; /* slightly darker grey */
+    color: #fff !important;
+}
 `;
+
+/** Dark mode: detect and color palette from external helper file */
+function isDarkMode() {
+    return document.body.classList.contains('dark') || document.body.classList.contains('bigMapDark');
+}
+function getColors() {
+    const dark = isDarkMode();
+    return dark
+        ? {
+            bg: 'var(--bs-body-bg, #1e1e1e)',
+            text: 'var(--bs-body-color, #eee)',
+            border: '#666',
+            tableBorder: '#666',
+            shadow: '0 6px 20px rgba(0,0,0,0.6)',
+            diffPos: '#28a745',
+            diffNeg: '#dc3545',
+            diffZero: '#ffc107',
+        }
+        : {
+            bg: 'var(--bs-body-bg, #ffffff)',
+            text: 'var(--bs-body-color, #111)',
+            border: '#ccc',
+            tableBorder: '#ccc',
+            shadow: '0 6px 20px rgba(0,0,0,0.3)',
+            diffPos: '#1a7f1a',
+            diffNeg: '#c33',
+            diffZero: '#d97706',
+        };
+}
+/** Build small CSS overrides based on current theme */
+function getThemeOverrideCss() {
+    const c = getColors();
+    const theadBg = isDarkMode() ? '#1f2937' : '#343a40';
+    return `
+/* Modals: background, text, borders */
+#rename_vehicles_extension-lightbox-modal,
+#rename_vehicles_settings-modal,
+#rename_vehicles_rename-modal,
+#rename_vehicles_execute-modal {
+    background: ${c.bg} !important;
+    color: ${c.text} !important;
+    border-color: ${c.border} !important;
+}
+/* Panels / scroll areas */
+.rename_vehicles_rv_scroll,
+#rv_variable_list,
+#rv_pattern_preview,
+#rv_exec_log,
+#rename_vehicles_execute-table-wrapper {
+    background: ${c.bg} !important;
+    color: ${c.text} !important;
+    border-color: ${c.border} !important;
+}
+/* Table */
+#rename_vehicles_execute-table thead {
+    background: ${theadBg} !important;
+    color: ${c.text} !important;
+}
+#rename_vehicles_execute-table,
+#rename_vehicles_execute-table th,
+#rename_vehicles_execute-table td {
+    border-color: ${c.tableBorder} !important;
+    color: ${c.text} !important;
+}
+/* Status accents */
+.rv_status_done { color: ${c.diffPos} !important; }
+.rv_status_failed { color: ${c.diffNeg} !important; }
+.rv_status_retry { color: ${c.diffZero} !important; }
+
+/* Dark mode row striping: use grey tones instead of black/white */
+body.dark #rename_vehicles_execute-table tbody tr:nth-child(even),
+body.bigMapDark #rename_vehicles_execute-table tbody tr:nth-child(even) {
+    background: transparent !important; /* neutralize default even striping in dark mode */
+}
+#rename_vehicles_execute-table tbody tr.rv_dark_row_even td,
+#rename_vehicles_execute-table tbody tr.rv_dark_row_even th {
+    background: #2d2f34 !important; /* grey */
+    color: #fff !important;
+}
+#rename_vehicles_execute-table tbody tr.rv_dark_row_odd td,
+#rename_vehicles_execute-table tbody tr.rv_dark_row_odd th {
+    background: #24262b !important; /* slightly darker grey */
+    color: #fff !important;
+}
+`;
+}
+/** Inject or update theme override styles */
+function applyThemeStyles() {
+    const id = 'rv_theme_block';
+    const css = getThemeOverrideCss();
+    let el = document.getElementById(id);
+    if (!el) {
+        el = document.createElement('style');
+        el.id = id;
+        document.head.appendChild(el);
+    }
+    if (el.textContent !== css) el.textContent = css;
+}
 
 /** UI: adds the "Fahrzeuge umbenennen" button to the profile dropdown; no args. */
 function add_button_to_personal_dropdown() {
@@ -478,7 +592,7 @@ async function uniqueVehicleTypes(playerVehicles = []) {
         let list = [];
         if (Array.isArray(data)) {
             list = data.map(it => {
-                const idNum = Number(it.id ?? it.type ?? it.vehicle_type);
+                const idNum = Number(it.id ?? it.vehicle_type);
                 if (!Number.isFinite(idNum)) return null;
                 const caption = String(it.caption || it.name || it.localized_name || it.text || idNum).trim();
                 return { id: idNum, caption };
@@ -728,7 +842,7 @@ function open_execute_modal(vehicles, buildings) {
 
     (async () => {
         const catalogMap = await getVehicleTypeCatalogCached(vehicles);
-        vehicles.forEach(v => {
+        vehicles.forEach((v, idx) => {
             const b = buildingMap.get(v.building_id) || {};
             const vehicleTypeId = v.vehicle_type ?? v.vehicle_type_id ?? '';
             const vtCaption = catalogMap[vehicleTypeId] || v.vehicle_type_caption || `Typ ${vehicleTypeId}`;
@@ -736,6 +850,12 @@ function open_execute_modal(vehicles, buildings) {
             tr.dataset.vehicleId = v.id;
             tr.dataset.vehicleType = vehicleTypeId;
             tr.dataset.buildingId = v.building_id ?? '';
+
+            // Dark mode: apply grey striping via classes
+            if (isDarkMode()) {
+                tr.classList.add(idx % 2 === 0 ? 'rv_dark_row_even' : 'rv_dark_row_odd');
+            }
+
             tr.innerHTML = `
                 <td>${v.id}</td>
                 <td class="rv_old_name">${escapeHtml(v.caption || '')}</td>
@@ -972,11 +1092,14 @@ async function api_call_buildings() {
 
 /** UI: injects style block once into the page; no args. */
 function inject_styles() {
-    if (document.getElementById('rv_style_block')) return;
-    const styleSheet = document.createElement('style');
-    styleSheet.id = 'rv_style_block';
-    styleSheet.textContent = styles;
-    document.head.appendChild(styleSheet);
+    if (!document.getElementById('rv_style_block')) {
+        const styleSheet = document.createElement('style');
+        styleSheet.id = 'rv_style_block';
+        styleSheet.textContent = styles;
+        document.head.appendChild(styleSheet);
+    }
+    // Apply theme-specific overrides (light/dark)
+    applyThemeStyles();
 }
 
 /** Init: boots the script, injects styles, adds menu button and observers; no args. */
@@ -997,12 +1120,15 @@ function inject_styles() {
         tryAdd();
     }
 
+    // Re-apply theme overrides when DOM changes may toggle dark classes
+    const applyThemeStylesDebounced = debounce(applyThemeStyles, 120);
     const obs = new MutationObserver(() => {
         if (!document.getElementById('rename-vehicles-menu-button')) {
             add_button_to_personal_dropdown();
         }
+        applyThemeStylesDebounced();
     });
-    obs.observe(document.body, { childList: true, subtree: true });
+    obs.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['class'] });
 })();
 
 
