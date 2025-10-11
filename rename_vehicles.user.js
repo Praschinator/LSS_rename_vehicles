@@ -1070,21 +1070,107 @@ function toRoman(num) {
 /** Utils: escapes HTML special chars to prevent injection. Args: str String. */
 function escapeHtml(str){ return String(str).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
-/** API: loads vehicles list and caches it in LS; no args. */
-async function api_call_vehicles() {
-    const resp = await fetch("https://www.leitstellenspiel.de/api/vehicles");
-    const data = await resp.json();
-    lsSetJson(LS_KEYS.vehicles, data);
-    console.log("API Call Vehicles erfolgreich");
-    return data;
+/** API: loads vehicles list and caches it in LS; waits up to 20s with retries. */
+async function api_call_vehicles(maxWaitMs = 20000) {
+    const url = "https://www.leitstellenspiel.de/api/vehicles";
+    const start = Date.now();
+    let attempt = 0;
+    let lastError;
+
+    while (Date.now() - start < maxWaitMs) {
+        attempt++;
+        const remaining = maxWaitMs - (Date.now() - start);
+        const perAttemptTimeout = Math.max(2000, Math.min(8000, remaining));
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), perAttemptTimeout);
+
+        try {
+            const resp = await fetch(url, {
+                signal: controller.signal,
+                credentials: 'same-origin',
+                cache: 'no-store'
+            });
+            clearTimeout(timeoutId);
+
+            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+            const data = await resp.json();
+
+            const list = Array.isArray(data)
+                ? data
+                : Array.isArray(data?.vehicles)
+                    ? data.vehicles
+                    : null;
+
+            if (Array.isArray(list)) {
+                lsSetJson(LS_KEYS.vehicles, list);
+                console.log(`API Call Vehicles erfolgreich (Versuch ${attempt}, ${list.length} Fahrzeuge)`);
+                return list;
+            }
+
+            lastError = new Error('Unerwartetes Antwortformat der Fahrzeug-API');
+        } catch (err) {
+            clearTimeout(timeoutId);
+            lastError = err;
+        }
+
+        if (Date.now() - start < maxWaitMs) {
+            await new Promise(r => setTimeout(r, 400)); // short backoff before retry
+        }
+    }
+
+    console.error(`[RV] Fahrzeuge konnten innerhalb von ${Math.round(maxWaitMs / 1000)}s nicht geladen werden.`, lastError);
+    throw new Error('Fahrzeug-API Timeout');
 }
-/** API: loads buildings list and caches it in LS; no args. */
-async function api_call_buildings() {
-    const resp = await fetch("https://www.leitstellenspiel.de/api/buildings");
-    const data = await resp.json();
-    lsSetJson(LS_KEYS.buildings, data);
-    console.log("API Call Buildings erfolgreich");
-    return data;
+/** API: loads buildings list and caches it in LS; waits up to 20s with retries. */
+async function api_call_buildings(maxWaitMs = 20000) {
+    const url = "https://www.leitstellenspiel.de/api/buildings";
+    const start = Date.now();
+    let attempt = 0;
+    let lastError;
+
+    while (Date.now() - start < maxWaitMs) {
+        attempt++;
+        const remaining = maxWaitMs - (Date.now() - start);
+        const perAttemptTimeout = Math.max(2000, Math.min(8000, remaining));
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), perAttemptTimeout);
+
+        try {
+            const resp = await fetch(url, {
+                signal: controller.signal,
+                credentials: 'same-origin',
+                cache: 'no-store'
+            });
+            clearTimeout(timeoutId);
+
+            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+            const data = await resp.json();
+
+            const list = Array.isArray(data)
+                ? data
+                : Array.isArray(data?.buildings)
+                    ? data.buildings
+                    : null;
+
+            if (Array.isArray(list)) {
+                lsSetJson(LS_KEYS.buildings, list);
+                console.log(`API Call Buildings erfolgreich (Versuch ${attempt}, ${list.length} Gebäude)`);
+                return list;
+            }
+
+            lastError = new Error('Unerwartetes Antwortformat der Gebäude-API');
+        } catch (err) {
+            clearTimeout(timeoutId);
+            lastError = err;
+        }
+
+        if (Date.now() - start < maxWaitMs) {
+            await new Promise(r => setTimeout(r, 400)); // short backoff before retry
+        }
+    }
+
+    console.error(`[RV] Gebäude konnten innerhalb von ${Math.round(maxWaitMs / 1000)}s nicht geladen werden.`, lastError);
+    throw new Error('Gebäude-API Timeout');
 }
 
 /** UI: injects style block once into the page; no args. */
