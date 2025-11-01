@@ -12,6 +12,9 @@ API Links:
 - [Building API](https://www.leitstellenspiel.de/api/buildings)
 - [LSSM Vehicle Type API](https://api.lss-manager.de/de_DE/vehicles)
 
+Other Implementations: 
+- [Shared API Storage Implementation](https://github.com/LUFSI/framework/blob/main/src/SharedAPIStorage.js)
+
 ---
 
 # Aktueller Stand:
